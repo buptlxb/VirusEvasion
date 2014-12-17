@@ -1,5 +1,3 @@
-__author__ = 'ICT-LXB'
-
 import args
 
 

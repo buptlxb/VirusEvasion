@@ -1,4 +1,3 @@
-__author__ = 'ICT-LXB'
 import argparse
 import sys
 
