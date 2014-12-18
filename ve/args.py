@@ -20,9 +20,11 @@ class Args:
   VirusEvasion.py --binary ./test-suite-binaries/elf-Linux-x86""")
 
         parser.add_argument("-v", "--version", action="store_true", help="Display the VirusEvasion's version")
-        parser.add_argument("--binary", type=str, metavar="<binary>", help="Specify a binary filename to obfuscate")
+        parser.add_argument("--binary", type=str, metavar="<binary>", required=True,
+                            help="Specify a binary filename to obfuscate")
         parser.add_argument("-e", "--entry", action="store_true", help="Obfuscate binary entry")
         parser.add_argument("-d", "--data", action="store_true", help="Obfuscate binary .data section")
+        parser.add_argument("-o", "--output", type=str, metavar="<output>", help="Specify the output file name")
         self.__args = parser.parse_args(arguments)
 
         if self.__args.version:
