@@ -24,9 +24,10 @@ class Args:
                             help="Specify a binary filename to obfuscate")
         parser.add_argument("-e", "--entry", action="store_true", help="Obfuscate binary entry")
         parser.add_argument("-d", "--data", action="store_true", help="Obfuscate binary .data section")
-        parser.add_argument("-o", "--output", type=str, metavar="<output>", help="Specify the output file name")
+        parser.add_argument("-o", "--output", type=str, metavar="<output>", required=True,
+                            help="Specify the output file name")
         self.__args = parser.parse_args(arguments)
-
+        print '[+] Parsing arguments completed.'
         if self.__args.version:
             self.__print_version()
             sys.exit(0)
