@@ -1,6 +1,6 @@
 import struct
 
 
-def generate(rva, target):
+def generate(rva, target, size=5):
     # jmp offset
-    return '\xe9' + struct.pack('<l', target-rva-5)
+    return '\x90' * (size-5) + '\xe9' + struct.pack('<l', target-rva-size)

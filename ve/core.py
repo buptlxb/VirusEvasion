@@ -29,19 +29,30 @@ class Core():
         entry = self.__binary.ntHeaders.optionalHeader.addressOfEntryPoint.value
         # get index of the section which entry resides
         index = self.__binary.getSectionByRva(entry)
-        # get the offset which junk code is to be writen to
-        jc_offset = self.__binary.sectionHeaders[index].sizeOfRawData.value + self.__binary.sectionHeaders[
-            index].pointerToRawData.value
         # get the relative virtual address of junk code
-        jc_rva = self.__binary.getRvaFromOffset(jc_offset)
+        jc_rva = self.__binary.sectionHeaders[index].sizeOfRawData.value + self.__binary.sectionHeaders[
+            index].virtualAddress.value
         # generate junk code
-        jc = junkcode.generate(jc_rva, entry)
-        # TODO bugs to fix
+        jc = junkcode.generate(jc_rva, entry, 1 << 12)
+        # TODO bugs to fix (sizeOfCode need to be adjusted)
         # extend code section and insert payload
-        self.__binary.extendSection(index, jc)
+        self.__binary.extendSection(index + 1, jc)
         # modify the entry point
         self.__binary.ntHeaders.optionalHeader.addressOfEntryPoint.value = jc_rva
         print '\t[*] PE entry obfuscation completed.'
+        # import pype32.consts
+        # import_dir = self.__binary.ntHeaders.optionalHeader.dataDirectory[pype32.consts.IMPORT_DIRECTORY]
+        # for ide in import_dir.info:
+        #     print hex(ide.originalFirstThunk.value),
+        #     print hex(ide.timeDateStamp.value),
+        #     print hex(ide.forwarderChain.value),
+        #     print hex(ide.name.value),
+        #     print hex(ide.firstThunk.value)
+        #     for iate in ide.iat:
+        #         print '\t', hex(iate.originalFirstThunk.value),
+        #         print hex(iate.firstThunk.value),
+        #         print iate.hint.value,
+        #         print iate.name.value
         return True
 
     def __obfuscate_data(self):

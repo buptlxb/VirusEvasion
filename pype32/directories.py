@@ -753,8 +753,9 @@ class ImportAddressTableEntry(baseclasses.BaseStructClass):
         self.hint = datatypes.WORD(0) #: L{WORD} hint.
         self.name = datatypes.String("") #: L{String} name.
         
-        self._attrsList = ["firstThunk",  "originalFirstThunk",  "hint",  "name"]
-        
+        # self._attrsList = ["firstThunk",  "originalFirstThunk",  "hint",  "name"]
+        self._attrsList = ["firstThunk"]
+
     def getType(self):
         """Returns L{consts.IMPORT_ADDRESS_TABLE_ENTRY}."""
         return consts.IMPORT_ADDRESS_TABLE_ENTRY
@@ -781,9 +782,18 @@ class ImportAddressTableEntry64(baseclasses.BaseStructClass):
         """Returns L{consts.IMPORT_ADDRESS_TABLE_ENTRY64}."""
         return consts.IMPORT_ADDRESS_TABLE_ENTRY64
 
+
 class ImportAddressTable(list):
     """Array of L{ImportAddressTableEntry} objects."""
-    pass
+    def __init__(self,  shouldPack=True):
+        self.shouldPack = shouldPack
+
+    def __str__(self):
+        return ''.join([str(x) for x in self if x.shouldPack])
+
+    def getType(self):
+        """Returns L{consts.IMPORT_ADDRESS_TABLE}."""
+        return consts.IMPORT_ADDRESS_TABLE
 
 class ExportTable(list):
     """Array of L{ExportTableEntry} objects."""
