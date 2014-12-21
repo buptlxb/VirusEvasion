@@ -129,8 +129,23 @@ class PE(object):
             else:
                 raise excep.NotValidPathException("The specified path does not exists.")
         
+        self.relocation_map = self.__build_relocation_map()
         self.validate()
-    
+
+    def __build_relocation_map(self):
+        relocation_map = []
+        relo_dir = self.ntHeaders.optionalHeader.dataDirectory[consts.RELOCATION_DIRECTORY]
+        image_base = self.ntHeaders.optionalHeader.imageBase
+        for ibre in relo_dir.info:
+            for relo in ibre.items:
+                if relo.value == 0:
+                    continue
+                ibre_rva = ibre.virtualAddress.value + (relo.value & 0xFFF)
+                ibre_index = self.getSectionByRva(ibre_rva)
+                ibre_data_index = self.getSectionByRva(self.getDwordAtRva(ibre_rva) - image_base)
+                relocation_map.append([ibre_rva, ibre_index, ibre_data_index])
+        return relocation_map
+
     def hasMZSignature(self, rd): 
         """
         Check for MZ signature.
@@ -543,14 +558,13 @@ class PE(object):
             self.sectionHeaders[s_index].sizeOfRawData.value = new_rz
             new_vz = self._adjustSectionAlignment(new_rz, fa, sa)
             self.sectionHeaders[s_index].misc.value = new_vz if new_vz > old_vz else old_vz
-            # TODO: maybe need adjust image directory
 
         except IndexError:
             raise IndexError("list index out of range.")
 
     def __set_data_at_rva(self, rva, data):
         s_index = self.getSectionByRva(rva)
-        if 0 < s_index < len(self.sectionHeaders):
+        if -1 < s_index < len(self.sectionHeaders):
             offset_in_section = self.getOffsetFromRva(rva) - self.sectionHeaders[s_index].pointerToRawData.value
             unchanged_data_1 = self.sections[s_index][:offset_in_section]
             unchanged_data_2 = self.sections[s_index][offset_in_section+len(data):]
@@ -560,9 +574,11 @@ class PE(object):
 
     def __adjust_directories(self, s_index, va_adder):
         for data_dir_index in self.sectionHeaders[s_index].relevant_directories:
+            # adjust data directory
             dde = self.ntHeaders.optionalHeader.dataDirectory[data_dir_index]
             dde.rva.value += va_adder
             if data_dir_index == consts.IMPORT_DIRECTORY:
+                # adjust import descriptor table
                 for ide in dde.info:
                     if ide.originalFirstThunk.value == 0:
                         continue
@@ -573,13 +589,20 @@ class PE(object):
                         iate.originalFirstThunk.value += va_adder
                         iate.firstThunk.value += va_adder
                 import_descriptor_data = str(dde.info)
-                unchanged_data = self.sections[s_index][len(import_descriptor_data):]
-                self.sections[s_index] = import_descriptor_data + unchanged_data
+                self.__set_data_at_rva(dde.rva, import_descriptor_data)
+                # unchanged_data = self.sections[s_index][len(import_descriptor_data):]
+                # self.sections[s_index] = import_descriptor_data + unchanged_data
+                # adjust import address table
                 for ide in dde.info:
                     if ide.originalFirstThunk.value == 0:
                         continue
                     self.__set_data_at_rva(ide.originalFirstThunk.value, str(ide.iat)+str(datatypes.DWORD(0)))
                     self.__set_data_at_rva(ide.firstThunk.value, str(ide.iat)+str(datatypes.DWORD(0)))
+            # TODO: need to adjust load configuration directory
+            elif s_index == consts.IAT_DIRECTORY:
+                dde = self.ntHeaders.optionalHeader.dataDirectory[data_dir_index]
+                dde.rva.value += va_adder
+
 
     def extendSection(self, sectionIndex, data):
         """
@@ -636,6 +659,7 @@ class PE(object):
                         # adjust VA and RO of the next section
                         new_va = self._adjustSectionAlignment(vzPreviousSection + vaPreviousSection, fa, sa)
                         va_adders.append(new_va - self.sectionHeaders[counter].virtualAddress.value)
+
                         self.sectionHeaders[counter].virtualAddress.value = new_va
                         self.sectionHeaders[counter].pointerToRawData.value = self._adjustFileAlignment(
                             rzPreviousSection + roPreviousSection, fa)
@@ -650,9 +674,64 @@ class PE(object):
 
                     counter = sectionIndex
                     for va_adder in va_adders:
+                        # adjust relevant directories in the shifted section
                         self.__adjust_directories(counter, va_adder)
                         counter += 1
-                    # TODO: need to adjust base relocation
+
+                    # adjust base relocation
+                    relocations = []
+                    # 1. adjust base relocation's base data in each section
+                    for rva, index, data_index in self.relocation_map:
+                        rva_adder = 0 if index < sectionIndex else va_adders[index-sectionIndex]
+                        new_rva = rva + rva_adder
+                        relocations.append(new_rva)
+                        if data_index < sectionIndex:
+                            continue
+                        data_adder = va_adders[data_index-sectionIndex]
+                        new_data = self.getDwordAtRva(new_rva).value + data_adder
+                        new_dword = datatypes.DWORD(new_data)
+                        self.__set_data_at_rva(new_rva, str(new_dword))
+
+                    # 2. generate base relocation section
+                    relocations.sort()
+                    base_relocations = directories.ImageBaseRelocation()
+                    virtual_address = 0
+                    base_relocation_entry = None
+                    for relo in relocations:
+                        if virtual_address != relo & 0xFFFFF000:
+                            # yield a new base relocation entry when virtual address comes into next 0x1000 range
+                            virtual_address = relo & 0xFFFFF000
+                            if base_relocation_entry is not None:
+                                # calculate relocation entry size
+                                size = len(base_relocation_entry)
+                                base_relocation_entry.sizeOfBlock.value = size
+                                if size & 0x3 != 0:
+                                    # we need to append sentinel to each base_relocation before moving to next one
+                                    base_relocation_entry.items.append(datatypes.WORD(0))
+                                    base_relocation_entry.sizeOfBlock.value = len(base_relocation_entry)
+
+                            # we move to the new 0x1000 range
+                            base_relocation_entry = directories.ImageBaseRelocationEntry(virtual_address)
+                            base_relocations.append(base_relocation_entry)
+
+                        # append relocation item in current 0x1000 range
+                        base_relocation_entry.items.append(datatypes.WORD(relo & 0xFFF | 0x3000))
+                    else:
+                        # calculate relocation entry size
+                        size = len(base_relocation_entry)
+                        base_relocation_entry.sizeOfBlock.value = size
+                        if size & 0x3 != 0:
+                            # we need to append sentinel to the lat relocation entry
+                            base_relocation_entry.items.append(datatypes.WORD(0))
+                            # calculate relocation entry size
+                            base_relocation_entry.sizeOfBlock.value = len(base_relocation_entry)
+
+                    relocation_directory = self.ntHeaders.optionalHeader.dataDirectory[consts.RELOCATION_DIRECTORY]
+                    # update relocation direction
+                    relocation_directory.info = base_relocations
+                    relocation_directory.size.value = sum([len(x) for x in base_relocations])
+                    self.__set_data_at_rva(relocation_directory.rva, str(base_relocations))
+
                 except IndexError:
                     raise IndexError("list index out of range.")
                 
@@ -688,12 +767,15 @@ class PE(object):
                 size_of_uninit_data += rz
 
             size_of_image += sh.misc.value
-
-        op_header.sizeOfCode.value = size_of_code
-        op_header.sizeOfInitializedData.value = size_of_init_data
-        op_header.sizeOfUninitializedData.value = size_of_uninit_data
-        op_header.sizeOfImage.value = self._adjustSectionAlignment(
-            size_of_image + self.sectionHeaders[0].virtualAddress.value, fa, sa)
+        if size_of_code > op_header.sizeOfCode.value:
+            op_header.sizeOfCode.value = size_of_code
+        if size_of_init_data > op_header.sizeOfInitializedData.value:
+            op_header.sizeOfInitializedData.value = size_of_init_data
+        if size_of_uninit_data > op_header.sizeOfUninitializedData.value:
+            op_header.sizeOfUninitializedData.value = size_of_uninit_data
+        if size_of_image > op_header.sizeOfImage.value:
+            op_header.sizeOfImage.value = self._adjustSectionAlignment(
+                size_of_image + self.sectionHeaders[0].virtualAddress.value, fa, sa)
     
     def _adjustFileAlignment(self, value, fileAlignment):
         """
@@ -1001,13 +1083,15 @@ class PE(object):
                          (consts.BOUND_IMPORT_DIRECTORY, self._parseBoundImportDirectory),
                          (consts.DELAY_IMPORT_DIRECTORY, self._parseDelayImportDirectory),
                          (consts.CONFIGURATION_DIRECTORY, self._parseLoadConfigDirectory),
-                         (consts.NET_METADATA_DIRECTORY, self._parseNetDirectory)]
+                         (consts.NET_METADATA_DIRECTORY, self._parseNetDirectory),
+                         (consts.IAT_DIRECTORY, None)]
         
         for directory in directories:
             data_dir = dataDirectoryInstance[directory[0]]
             if data_dir.rva.value and data_dir.size.value:
                 self.sectionHeaders[self.getSectionByRva(data_dir.rva.value)].relevant_directories.append(directory[0])
-                dataDirectoryInstance[directory[0]].info = directory[1](data_dir.rva.value, data_dir.size.value, magic)
+                if directory[1] is not None:
+                    dataDirectoryInstance[directory[0]].info = directory[1](data_dir.rva.value, data_dir.size.value, magic)
 
     def _parseResourceDirectory(self, rva, size, magic = consts.PE32):
         """

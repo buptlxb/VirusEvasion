@@ -173,7 +173,7 @@ class Array(list):
             toRead = arrayLength * 2
             if dataLength >= toRead:
                 for i in range(arrayLength):
-                    newArray.append(DWORD(readDataInstance.readWord()))
+                    newArray.append(WORD(readDataInstance.readWord()))
             else:
                 raise excep.DataLengthException("Not enough bytes to read.")
                 

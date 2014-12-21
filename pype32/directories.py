@@ -482,7 +482,7 @@ class ImageLoadConfigDirectory64(baseclasses.BaseStructClass):
 
 class ImageBaseRelocationEntry(baseclasses.BaseStructClass):
     """ImageBaseRelocationEntry object."""
-    def __init__(self,  shouldPack = True):
+    def __init__(self, virtual_address=0, size_of_block=0, shouldPack = True):
         """
         A class representation of a C{IMAGE_BASE_RELOCATION} structure.
         @see: U{http://msdn.microsoft.com/en-us/magazine/cc301808.aspx}
@@ -492,10 +492,10 @@ class ImageBaseRelocationEntry(baseclasses.BaseStructClass):
         """
         baseclasses.BaseStructClass.__init__(self,  shouldPack)
         
-        self.virtualAddress = datatypes.DWORD(0) #: L{DWORD} virtualAddress.
-        self.sizeOfBlock = datatypes.DWORD(0) #: L{DWORD} sizeOfBlock
-        self.items = datatypes.Array(datatypes.TYPE_WORD) #: L{Array} items.
-        
+        self.virtualAddress = datatypes.DWORD(virtual_address)  #: L{DWORD} virtualAddress.
+        self.sizeOfBlock = datatypes.DWORD(size_of_block)   #: L{DWORD} sizeOfBlock
+        self.items = datatypes.Array(datatypes.TYPE_WORD)  #: L{Array} items.
+
         self._attrsList = ["virtualAddress", "sizeOfBlock", "items"]
     
     def getType(self):
@@ -522,8 +522,12 @@ class ImageBaseRelocationEntry(baseclasses.BaseStructClass):
         
 class ImageBaseRelocation(list):
     """ImageBaseRelocation array."""
-    pass
-    
+    def __init__(self,  shouldPack=True):
+        self.shouldPack = shouldPack
+
+    def __str__(self):
+        return ''.join([str(x) for x in self if x.shouldPack])
+
 class ImageDebugDirectory(baseclasses.BaseStructClass):
     """ImageDebugDirectory object."""
     def __init__(self,  shouldPack = True):

@@ -34,25 +34,11 @@ class Core():
             index].virtualAddress.value
         # generate junk code
         jc = junkcode.generate(jc_rva, entry, 1 << 12)
-        # TODO bugs to fix (sizeOfCode need to be adjusted)
         # extend code section and insert payload
         self.__binary.extendSection(index + 1, jc)
         # modify the entry point
         self.__binary.ntHeaders.optionalHeader.addressOfEntryPoint.value = jc_rva
         print '\t[*] PE entry obfuscation completed.'
-        # import pype32.consts
-        # import_dir = self.__binary.ntHeaders.optionalHeader.dataDirectory[pype32.consts.IMPORT_DIRECTORY]
-        # for ide in import_dir.info:
-        #     print hex(ide.originalFirstThunk.value),
-        #     print hex(ide.timeDateStamp.value),
-        #     print hex(ide.forwarderChain.value),
-        #     print hex(ide.name.value),
-        #     print hex(ide.firstThunk.value)
-        #     for iate in ide.iat:
-        #         print '\t', hex(iate.originalFirstThunk.value),
-        #         print hex(iate.firstThunk.value),
-        #         print iate.hint.value,
-        #         print iate.name.value
         return True
 
     def __obfuscate_data(self):
