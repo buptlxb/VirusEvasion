@@ -780,8 +780,7 @@ class PE(object):
                     op_header.baseOfData.value = sh.virtualAddress.value
                 size_of_uninit_data += rz
 
-            size_of_image += sh.misc.value
-        size_of_image += self.sectionHeaders[0].virtualAddress.value
+        size_of_image = self.sectionHeaders[-1].virtualAddress.value + self.sectionHeaders[-1].misc.value
 
         if size_of_code > op_header.sizeOfCode.value:
             op_header.sizeOfCode.value = size_of_code
