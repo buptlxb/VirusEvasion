@@ -130,6 +130,7 @@ class PE(object):
                 raise excep.NotValidPathException("The specified path does not exists.")
         
         self.relocation_map = self.__build_relocation_map()
+        self.seh_map = self.__build_safe_exception_handler_map()
         self.validate()
 
     def __build_relocation_map(self):
@@ -145,6 +146,18 @@ class PE(object):
                 ibre_data_index = self.getSectionByRva(self.getDwordAtRva(ibre_rva) - image_base)
                 relocation_map.append([ibre_rva, ibre_index, ibre_data_index])
         return relocation_map
+
+    def __build_safe_exception_handler_map(self):
+        seh_map = []
+        ilcd = self.ntHeaders.optionalHeader.dataDirectory[consts.CONFIGURATION_DIRECTORY].info
+        if ilcd is not None:
+            sehs = ilcd.items
+            if sehs is not None:
+                for seh in sehs:
+                    seh_rva = seh.value
+                    seh_index = self.getSectionByRva(seh_rva)
+                    seh_map.append([seh_rva, seh_index])
+        return seh_map
 
     def hasMZSignature(self, rd): 
         """
@@ -603,6 +616,59 @@ class PE(object):
                 dde = self.ntHeaders.optionalHeader.dataDirectory[data_dir_index]
                 dde.rva.value += va_adder
 
+    def __adjust_base_relocations(self, s_index, va_adders):
+        # adjust base relocation
+        relocations = []
+        # 1. adjust base relocation's base data in each section
+        for rva, index, data_index in self.relocation_map:
+            rva_adder = 0 if index < s_index else va_adders[index - s_index]
+            new_rva = rva + rva_adder
+            relocations.append(new_rva)
+            if data_index < s_index:
+                continue
+            data_adder = va_adders[data_index - s_index]
+            new_data = self.getDwordAtRva(new_rva).value + data_adder
+            new_dword = datatypes.DWORD(new_data)
+            self.__set_data_at_rva(new_rva, str(new_dword))
+
+        # 2. generate base relocation section
+        relocations.sort()
+        base_relocations = directories.ImageBaseRelocation()
+        virtual_address = 0
+        base_relocation_entry = None
+        for relo in relocations:
+            if virtual_address != relo & 0xFFFFF000:
+                # yield a new base relocation entry when virtual address comes into next 0x1000 range
+                virtual_address = relo & 0xFFFFF000
+                if base_relocation_entry is not None:
+                    # calculate relocation entry size
+                    size = len(base_relocation_entry)
+                    base_relocation_entry.sizeOfBlock.value = size
+                    if size & 0x3 != 0:
+                        # we need to append sentinel to each base_relocation before moving to next one
+                        base_relocation_entry.items.append(datatypes.WORD(0))
+                        base_relocation_entry.sizeOfBlock.value = len(base_relocation_entry)
+
+                # we move to the new 0x1000 range
+                base_relocation_entry = directories.ImageBaseRelocationEntry(virtual_address)
+                base_relocations.append(base_relocation_entry)
+
+            # append relocation item in current 0x1000 range
+            base_relocation_entry.items.append(datatypes.WORD(relo & 0xFFF | 0x3000))
+        else:
+            # calculate relocation entry size
+            size = len(base_relocation_entry)
+            base_relocation_entry.sizeOfBlock.value = size
+            if size & 0x3 != 0:
+                # we need to append sentinel to the lat relocation entry
+                base_relocation_entry.items.append(datatypes.WORD(0))
+                # calculate relocation entry size
+                base_relocation_entry.sizeOfBlock.value = len(base_relocation_entry)
+        relocation_directory = self.ntHeaders.optionalHeader.dataDirectory[consts.RELOCATION_DIRECTORY]
+        # update relocation direction
+        relocation_directory.info = base_relocations
+        relocation_directory.size.value = sum([len(x) for x in base_relocations])
+        self.__set_data_at_rva(relocation_directory.rva, str(base_relocations))
 
     def extendSection(self, sectionIndex, data):
         """
@@ -678,59 +744,7 @@ class PE(object):
                         self.__adjust_directories(counter, va_adder)
                         counter += 1
 
-                    # adjust base relocation
-                    relocations = []
-                    # 1. adjust base relocation's base data in each section
-                    for rva, index, data_index in self.relocation_map:
-                        rva_adder = 0 if index < sectionIndex else va_adders[index-sectionIndex]
-                        new_rva = rva + rva_adder
-                        relocations.append(new_rva)
-                        if data_index < sectionIndex:
-                            continue
-                        data_adder = va_adders[data_index-sectionIndex]
-                        new_data = self.getDwordAtRva(new_rva).value + data_adder
-                        new_dword = datatypes.DWORD(new_data)
-                        self.__set_data_at_rva(new_rva, str(new_dword))
-
-                    # 2. generate base relocation section
-                    relocations.sort()
-                    base_relocations = directories.ImageBaseRelocation()
-                    virtual_address = 0
-                    base_relocation_entry = None
-                    for relo in relocations:
-                        if virtual_address != relo & 0xFFFFF000:
-                            # yield a new base relocation entry when virtual address comes into next 0x1000 range
-                            virtual_address = relo & 0xFFFFF000
-                            if base_relocation_entry is not None:
-                                # calculate relocation entry size
-                                size = len(base_relocation_entry)
-                                base_relocation_entry.sizeOfBlock.value = size
-                                if size & 0x3 != 0:
-                                    # we need to append sentinel to each base_relocation before moving to next one
-                                    base_relocation_entry.items.append(datatypes.WORD(0))
-                                    base_relocation_entry.sizeOfBlock.value = len(base_relocation_entry)
-
-                            # we move to the new 0x1000 range
-                            base_relocation_entry = directories.ImageBaseRelocationEntry(virtual_address)
-                            base_relocations.append(base_relocation_entry)
-
-                        # append relocation item in current 0x1000 range
-                        base_relocation_entry.items.append(datatypes.WORD(relo & 0xFFF | 0x3000))
-                    else:
-                        # calculate relocation entry size
-                        size = len(base_relocation_entry)
-                        base_relocation_entry.sizeOfBlock.value = size
-                        if size & 0x3 != 0:
-                            # we need to append sentinel to the lat relocation entry
-                            base_relocation_entry.items.append(datatypes.WORD(0))
-                            # calculate relocation entry size
-                            base_relocation_entry.sizeOfBlock.value = len(base_relocation_entry)
-
-                    relocation_directory = self.ntHeaders.optionalHeader.dataDirectory[consts.RELOCATION_DIRECTORY]
-                    # update relocation direction
-                    relocation_directory.info = base_relocations
-                    relocation_directory.size.value = sum([len(x) for x in base_relocations])
-                    self.__set_data_at_rva(relocation_directory.rva, str(base_relocations))
+                    self.__adjust_base_relocations(sectionIndex, va_adders)
 
                 except IndexError:
                     raise IndexError("list index out of range.")
@@ -767,6 +781,8 @@ class PE(object):
                 size_of_uninit_data += rz
 
             size_of_image += sh.misc.value
+        size_of_image += self.sectionHeaders[0].virtualAddress.value
+
         if size_of_code > op_header.sizeOfCode.value:
             op_header.sizeOfCode.value = size_of_code
         if size_of_init_data > op_header.sizeOfInitializedData.value:
@@ -774,8 +790,7 @@ class PE(object):
         if size_of_uninit_data > op_header.sizeOfUninitializedData.value:
             op_header.sizeOfUninitializedData.value = size_of_uninit_data
         if size_of_image > op_header.sizeOfImage.value:
-            op_header.sizeOfImage.value = self._adjustSectionAlignment(
-                size_of_image + self.sectionHeaders[0].virtualAddress.value, fa, sa)
+            op_header.sizeOfImage.value = self._adjustSectionAlignment(size_of_image, fa, sa)
     
     def _adjustFileAlignment(self, value, fileAlignment):
         """
@@ -1206,11 +1221,20 @@ class PE(object):
         # more information here: http://www.accuvant.com/blog/old-meets-new-microsoft-windows-safeseh-incompatibility
         data = self.getDataAtRva(rva, directories.ImageLoadConfigDirectory().sizeof())
         rd = utils.ReadData(data)
-
         if magic == consts.PE32:
-            return directories.ImageLoadConfigDirectory.parse(rd)
+            ilcd = directories.ImageLoadConfigDirectory.parse(rd)
+            table_data = self.getDataAtRva(ilcd.SEHandlerTable.value - self.ntHeaders.optionalHeader.imageBase.value,
+                                           ilcd.SEHandlerCount.value * datatypes.DWORD().sizeof())
+            table_rd = utils.ReadData(table_data)
+            ilcd.items = datatypes.Array.parse(table_rd, datatypes.TYPE_DWORD, ilcd.SEHandlerCount.value)
+            return ilcd
         elif magic == consts.PE64:
-            return directories.ImageLoadConfigDirectory64.parse(rd)
+            ilcd = directories.ImageLoadConfigDirectory64.parse(rd)
+            table_data = self.getDataAtRva(ilcd.SEHandlerTable.value - self.ntHeaders.optionalHeader.imageBase.value,
+                                           ilcd.SEHandlerCount.value * datatypes.DWORD().sizeof())
+            table_rd = utils.ReadData(table_data)
+            ilcd.items = datatypes.Array.parse(table_rd, datatypes.TYPE_QWORD, ilcd.SEHandlerCount.value)
+            return ilcd
         else:
             raise excep.InvalidParameterException("Wrong magic")
 

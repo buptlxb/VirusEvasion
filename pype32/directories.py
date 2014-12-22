@@ -360,6 +360,7 @@ class ImageLoadConfigDirectory(baseclasses.BaseStructClass):
         self.securityCookie = datatypes.DWORD() # VA
         self.SEHandlerTable = datatypes.DWORD() # VA
         self.SEHandlerCount = datatypes.DWORD()
+        self.items = None
 
         self._attrsList = ["size", "timeDateStamp", "majorVersion", "minorVersion", "globalFlagsClear", "globalFlagsSet", "criticalSectionDefaultTimeout", "deCommitFreeBlockThreshold",\
                             "deCommitTotalFreeThreshold", "lockPrefixTable", "maximumAllocationSize", "virtualMemoryThreshold", "processHeapFlags", "processAffinityMask", "csdVersion",\
