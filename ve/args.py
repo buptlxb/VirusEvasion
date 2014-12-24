@@ -17,7 +17,7 @@ class Args:
   VirusEvasion provides evasion for your virus.
 """,
                                          epilog="""examples:
-  VirusEvasion.py --binary ./test-suite-binaries/elf-Linux-x86""")
+  VirusEvasion.py -e -d --binary ./virus.exe --output ./output.exe""")
 
         parser.add_argument("-v", "--version", action="store_true", help="Display the VirusEvasion's version")
         parser.add_argument("--binary", type=str, metavar="<binary>", required=True,

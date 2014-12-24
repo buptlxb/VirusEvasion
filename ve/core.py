@@ -1,5 +1,6 @@
 import pype32
 import junkcode
+import translator
 
 
 class Core():
@@ -17,6 +18,7 @@ class Core():
             return False
         if self.__options.entry and not self.__obfuscate_entry():
             return False
+        self.__binary.write(r"E:\cspace\output2.exe")
         if self.__options.data and not self.__obfuscate_data():
             return False
         print '[+] Obfuscation completed.'
@@ -42,6 +44,15 @@ class Core():
         return True
 
     def __obfuscate_data(self):
-        print "[Error] {0}.{1}.__obfuscate_data has not implemented".format(
-            self.__module__, self.__class__.__name__)
-        return False
+        # get entry point virtual address
+        optional_header = self.__binary.ntHeaders.optionalHeader
+        # set the encrypt salt
+        salt = 0xFF
+        # get the XOR translator
+        xor = translator.XOR(salt)
+        # encrypt the data section
+        df_rva, data_size = self.__binary.encrypt_data_section(xor)
+        # modify the entry point
+        optional_header.addressOfEntryPoint.value = df_rva
+        print '\t[*] PE data(0x{0:x}) obfuscation completed.'.format(data_size)
+        return True

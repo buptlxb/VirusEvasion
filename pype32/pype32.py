@@ -131,6 +131,7 @@ class PE(object):
         
         self.relocation_map = self.__build_relocation_map()
         self.seh_map = self.__build_safe_exception_handler_map()
+        self.__update_data_section_loader_irrelevant_field()
         self.validate()
 
     def __build_relocation_map(self):
@@ -146,6 +147,37 @@ class PE(object):
                 ibre_data_index = self.getSectionByRva(self.getDwordAtRva(ibre_rva) - image_base)
                 relocation_map.append([ibre_rva, ibre_index, ibre_data_index])
         return relocation_map
+
+    def __update_data_section_loader_irrelevant_field(self):
+        data_index = 0
+        while data_index < len(self.sectionHeaders):
+            if self.sectionHeaders[data_index].characteristics == 0xC0000040:
+                break
+            data_index += 1
+        else:
+            return
+        sh = self.sectionHeaders[data_index]
+        sh.pointerToLoaderIrrelevantRawData.value = sh.pointerToRawData.value
+        sh.sizeOfLoaderIrrelevantRawData.value = sh.sizeOfRawData.value
+        for dir_index in sh.relevant_directories:
+            dir_rva = sh.dataDirectory[dir_index].rva.value
+            dir_ra = self.getOffsetFromRva(dir_rva)
+            end_ra = sh.sizeOfLoaderIrrelevantRawData.value + sh.pointerToLoaderIrrelevantRawData.value
+            if sh.pointerToLoaderIrrelevantRawData.value < dir_ra < end_ra:
+                sh.sizeOfLoaderIrrelevantRawData.value = dir_ra - sh.pointerToLoaderIrrelevantRawData.value
+            elif sh.pointerToLoaderIrrelevantRawData.value == dir_ra:
+                sh.sizeOfLoaderIrrelevantRawData.value -= sh.dataDirectory[dir_index].size.value
+                sh.pointerToLoaderIrrelevantRawData.value = dir_ra + sh.dataDirectory[dir_index].size.value
+
+        for ibre_rva, ibre_index, ibre_data_index in self.relocation_map:
+            if ibre_index == data_index:
+                ibre_ra = self.getOffsetFromRva(ibre_rva)
+                end_ra = sh.sizeOfLoaderIrrelevantRawData.value + sh.pointerToLoaderIrrelevantRawData.value
+                if sh.pointerToLoaderIrrelevantRawData.value < ibre_ra < end_ra:
+                    sh.sizeOfLoaderIrrelevantRawData.value = ibre_ra - sh.pointerToLoaderIrrelevantRawData.value
+                elif sh.pointerToLoaderIrrelevantRawData.value == ibre_ra:
+                    sh.sizeOfLoaderIrrelevantRawData.value -= 4
+                    sh.pointerToLoaderIrrelevantRawData.value = ibre_ra + 4
 
     def __build_safe_exception_handler_map(self):
         seh_map = []
@@ -575,7 +607,7 @@ class PE(object):
         except IndexError:
             raise IndexError("list index out of range.")
 
-    def __set_data_at_rva(self, rva, data):
+    def set_data_at_rva(self, rva, data):
         s_index = self.getSectionByRva(rva)
         if -1 < s_index < len(self.sectionHeaders):
             offset_in_section = self.getOffsetFromRva(rva) - self.sectionHeaders[s_index].pointerToRawData.value
@@ -602,15 +634,15 @@ class PE(object):
                         iate.originalFirstThunk.value += va_adder
                         iate.firstThunk.value += va_adder
                 import_descriptor_data = str(dde.info)
-                self.__set_data_at_rva(dde.rva, import_descriptor_data)
+                self.set_data_at_rva(dde.rva, import_descriptor_data)
                 # unchanged_data = self.sections[s_index][len(import_descriptor_data):]
                 # self.sections[s_index] = import_descriptor_data + unchanged_data
                 # adjust import address table
                 for ide in dde.info:
                     if ide.originalFirstThunk.value == 0:
                         continue
-                    self.__set_data_at_rva(ide.originalFirstThunk.value, str(ide.iat)+str(datatypes.DWORD(0)))
-                    self.__set_data_at_rva(ide.firstThunk.value, str(ide.iat)+str(datatypes.DWORD(0)))
+                    self.set_data_at_rva(ide.originalFirstThunk.value, str(ide.iat)+str(datatypes.DWORD(0)))
+                    self.set_data_at_rva(ide.firstThunk.value, str(ide.iat)+str(datatypes.DWORD(0)))
             # TODO: need to adjust load configuration directory
             elif s_index == consts.IAT_DIRECTORY:
                 dde = self.ntHeaders.optionalHeader.dataDirectory[data_dir_index]
@@ -629,7 +661,7 @@ class PE(object):
             data_adder = va_adders[data_index - s_index]
             new_data = self.getDwordAtRva(new_rva).value + data_adder
             new_dword = datatypes.DWORD(new_data)
-            self.__set_data_at_rva(new_rva, str(new_dword))
+            self.set_data_at_rva(new_rva, str(new_dword))
 
         # 2. generate base relocation section
         relocations.sort()
@@ -668,7 +700,7 @@ class PE(object):
         # update relocation direction
         relocation_directory.info = base_relocations
         relocation_directory.size.value = sum([len(x) for x in base_relocations])
-        self.__set_data_at_rva(relocation_directory.rva, str(base_relocations))
+        self.set_data_at_rva(relocation_directory.rva, str(base_relocations))
 
     def extendSection(self, sectionIndex, data):
         """
@@ -752,6 +784,9 @@ class PE(object):
         else:
             raise excep.SectionHeadersException("There is no section to extend.")
         self._fix_pe()
+        self.relocation_map = self.__build_relocation_map()
+        self.seh_map = self.__build_safe_exception_handler_map()
+        self.__update_data_section_loader_irrelevant_field()
 
     def _fix_pe(self):
         """
@@ -790,7 +825,47 @@ class PE(object):
             op_header.sizeOfUninitializedData.value = size_of_uninit_data
         if size_of_image > op_header.sizeOfImage.value:
             op_header.sizeOfImage.value = self._adjustSectionAlignment(size_of_image, fa, sa)
-    
+
+    def encrypt_data_section(self, translator):
+        # get .data section index
+        data_index = 0
+        while data_index < len(self.sectionHeaders):
+            if self.sectionHeaders[data_index].characteristics == 0xC0000040:
+                break
+            data_index += 1
+
+        # get the bytes in .data section, which is permitted to encrypt
+        s_data = self.sections[data_index]
+        data_sh = self.sectionHeaders[data_index]
+        data_start = data_sh.pointerToRawData.value
+        data_loader_irrelevant_start = data_sh.pointerToLoaderIrrelevantRawData.value
+        data_loader_irrelevant_size = data_sh.sizeOfLoaderIrrelevantRawData.value
+        data_list = list(s_data[data_loader_irrelevant_start-data_start:data_loader_irrelevant_start-data_start+data_loader_irrelevant_size])
+
+        # encrypt each byte
+        for i in range(len(data_list)):
+            data_list[i] = chr(translator.encryptor(ord(data_list[i])))
+        data = ''.join(data_list)
+        # write back to the .data section
+        self.set_data_at_rva(self.getRvaFromOffset(data_loader_irrelevant_start), data)
+
+        # get entry point virtual address
+        optional_header = self.ntHeaders.optionalHeader
+        entry = optional_header.addressOfEntryPoint.value
+        # get index of the section which entry resides
+        code_index = self.getSectionByRva(entry)
+        # get the relative virtual address of junk code
+        df_rva = self.sectionHeaders[code_index].sizeOfRawData.value + self.sectionHeaders[
+            code_index].virtualAddress.value
+        # generate data section decrypt function
+        decode_func = translator.decryptor(df_rva, entry, self.getRvaFromOffset(data_loader_irrelevant_start),
+                                           data_loader_irrelevant_size)
+        # extend the code section and insert decrypt function
+        self.extendSection(code_index+1, decode_func)
+        # relocate the decrypt function after shift the data section because of extending code section
+        translator.relocator(self, df_rva, data_sh.virtualAddress.value)
+        return df_rva, data_loader_irrelevant_size
+
     def _adjustFileAlignment(self, value, fileAlignment):
         """
         Align a value to C{FileAligment}.
@@ -2075,6 +2150,8 @@ class SectionHeader(baseclasses.BaseStructClass):
         self.numberOfRelocations = datatypes.WORD(0) #: L{WORD} numberOfRelocations.
         self.numberOfLinesNumbers = datatypes.WORD(0) #: L{WORD} numberOfLinesNumbers.
         self.characteristics = datatypes.DWORD(0x60000000) #: L{DWORD} characteristics.
+        self.sizeOfLoaderIrrelevantRawData = datatypes.DWORD(0x200)
+        self.pointerToLoaderIrrelevantRawData = datatypes.DWORD(0x400)
         self.relevant_directories = []
 
         self._attrsList = ["name","misc","virtualAddress","sizeOfRawData","pointerToRawData","pointerToRelocations", \
@@ -2119,7 +2196,6 @@ class SectionHeader(baseclasses.BaseStructClass):
     def is_uninit_data_section(self):
         """Returns True if the section is uninitialized data section, otherwise False"""
         return self.characteristics.value & consts.IMAGE_SCN_CNT_UNINITIALIZED_DATA
-
 
 class SectionHeaders(list):
     """SectionHeaders object."""
