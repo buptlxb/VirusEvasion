@@ -16,9 +16,8 @@ class Core():
         print '[+] Obfuscation start:'
         if not self.__checks_before_manipulations():
             return False
-        if self.__options.entry and not self.__obfuscate_entry():
+        if self.__options.entry >= 5 and not self.__obfuscate_entry():
             return False
-        self.__binary.write(r"E:\cspace\output2.exe")
         if self.__options.data and not self.__obfuscate_data():
             return False
         print '[+] Obfuscation completed.'
@@ -35,12 +34,12 @@ class Core():
         jc_rva = self.__binary.sectionHeaders[index].sizeOfRawData.value + self.__binary.sectionHeaders[
             index].virtualAddress.value
         # generate junk code
-        jc = junkcode.generate(jc_rva, entry, 1 << 12)
+        jc = junkcode.generate(jc_rva, entry, self.__options.entry)
         # extend code section and insert payload
         self.__binary.extendSection(index + 1, jc)
         # modify the entry point
         self.__binary.ntHeaders.optionalHeader.addressOfEntryPoint.value = jc_rva
-        print '\t[*] PE entry obfuscation completed.'
+        print '\t[*] PE entry(0x{0:x}) obfuscation completed.'.format(self.__options.entry)
         return True
 
     def __obfuscate_data(self):

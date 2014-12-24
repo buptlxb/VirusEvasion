@@ -6,7 +6,7 @@ Virus Evasion is a virus obfuscation tool.
 Usage
 ----
 
-    usage: VirusEvasion.py [-h] [-v] [-e] [-d] -b <binary> -o <output>
+    usage: VirusEvasion.py [-h] [-v] [-e [ENTRY]] [-d] -b <binary> -o <output>
 
     description:
       VirusEvasion provides evasion for your virus.
@@ -14,7 +14,9 @@ Usage
     optional arguments:
       -h, --help            show this help message and exit
       -v, --version         Display the VirusEvasion's version
-      -e, --entry           Obfuscate binary entry
+      -e [ENTRY], --entry [ENTRY]
+                            Obfuscate binary entry with [ENTRY_SIZE] code, default
+                            size is 100
       -d, --data            Obfuscate binary .data section
       -b <binary>, --binary <binary>
                             Specify a binary filename to obfuscate
