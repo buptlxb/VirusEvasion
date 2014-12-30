@@ -33,8 +33,7 @@ class Args:
         if self.__args.version:
             self.__print_version()
             sys.exit(0)
-        if self.__args.entry < 5:
-            print self.__args.entry
+        if self.__args.entry is not None and self.__args.entry < 5:
             print 'Error: Obfuscate binary entry size ({0:d}) must not be less than 5'.format(self.__args.entry)
             sys.exit(0)
 

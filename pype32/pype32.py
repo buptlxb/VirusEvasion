@@ -107,17 +107,17 @@ class PE(object):
         self._verbose = verbose
         self._fastLoad = fastLoad
         self.PE_TYPE = None
-        
+
         if self._data and not isinstance(data,  utils.ReadData):
             rd = utils.ReadData(data)
             self._internalParse(rd)
         elif self._pathToFile:
             if os.path.exists(self._pathToFile):
-                
+
                 stat = os.stat(self._pathToFile)
                 if stat.st_size == 0:
-                    raise PEException("File is empty.")
-                    
+                    raise excep.PEException("File is empty.")
+
                 self._data = self.readFile(self._pathToFile)
                 rd = utils.ReadData(self._data)
                 # nasty check to avoid loading a non-PE file
@@ -128,10 +128,10 @@ class PE(object):
                     raise excep.PyPe32Exception("MZ/PE signature not present. Maybe not a PE file?")
             else:
                 raise excep.NotValidPathException("The specified path does not exists.")
-        
+
         self.relocation_map = self.__build_relocation_map()
         self.seh_map = self.__build_safe_exception_handler_map()
-        self.__update_data_section_loader_irrelevant_field()
+        self.__update_data_section_loader_irrelevant_range()
         self.validate()
 
     def __build_relocation_map(self):
@@ -148,7 +148,10 @@ class PE(object):
                 relocation_map.append([ibre_rva, ibre_index, ibre_data_index])
         return relocation_map
 
-    def __update_data_section_loader_irrelevant_field(self):
+    def __update_data_section_loader_irrelevant_range(self):
+        """
+        calculate original data section's loader irrelevant range
+        """
         data_index = 0
         while data_index < len(self.sectionHeaders):
             if self.sectionHeaders[data_index].characteristics == 0xC0000040:
@@ -157,27 +160,32 @@ class PE(object):
         else:
             return
         sh = self.sectionHeaders[data_index]
-        sh.pointerToLoaderIrrelevantRawData.value = sh.pointerToRawData.value
-        sh.sizeOfLoaderIrrelevantRawData.value = sh.sizeOfRawData.value
-        for dir_index in sh.relevant_directories:
-            dir_rva = sh.dataDirectory[dir_index].rva.value
-            dir_ra = self.getOffsetFromRva(dir_rva)
-            end_ra = sh.sizeOfLoaderIrrelevantRawData.value + sh.pointerToLoaderIrrelevantRawData.value
-            if sh.pointerToLoaderIrrelevantRawData.value < dir_ra < end_ra:
-                sh.sizeOfLoaderIrrelevantRawData.value = dir_ra - sh.pointerToLoaderIrrelevantRawData.value
-            elif sh.pointerToLoaderIrrelevantRawData.value == dir_ra:
-                sh.sizeOfLoaderIrrelevantRawData.value -= sh.dataDirectory[dir_index].size.value
-                sh.pointerToLoaderIrrelevantRawData.value = dir_ra + sh.dataDirectory[dir_index].size.value
-
+        lirange = [[sh.virtualAddress.value, sh.liRange[-1][0]+sh.liRange[-1][1]-sh.liRange[0][0]]]
+        # TODO: maybe need to consider relevant directories
+        if len(sh.relevant_directories) > 0:
+            print "Warning: There are some data directories in data section."
         for ibre_rva, ibre_index, ibre_data_index in self.relocation_map:
             if ibre_index == data_index:
-                ibre_ra = self.getOffsetFromRva(ibre_rva)
-                end_ra = sh.sizeOfLoaderIrrelevantRawData.value + sh.pointerToLoaderIrrelevantRawData.value
-                if sh.pointerToLoaderIrrelevantRawData.value < ibre_ra < end_ra:
-                    sh.sizeOfLoaderIrrelevantRawData.value = ibre_ra - sh.pointerToLoaderIrrelevantRawData.value
-                elif sh.pointerToLoaderIrrelevantRawData.value == ibre_ra:
-                    sh.sizeOfLoaderIrrelevantRawData.value -= 4
-                    sh.pointerToLoaderIrrelevantRawData.value = ibre_ra + 4
+                for i in range(len(lirange)):
+                    start = lirange[i][0]
+                    size = lirange[i][1]
+                    if start < ibre_rva < start+size:
+                        lirange[i][1] = ibre_rva - start
+                        if size > 4:
+                            new_start = ibre_rva + 4
+                            new_size = start + size - new_start
+                            lirange.append([new_start, new_size])
+                        break
+                    elif start == ibre_rva:
+                        if size > 4:
+                            lirange[i][0] = start + 4
+                            lirange[i][1] -= 4
+                        elif size == 4:
+                            del lirange[i]
+                        else:
+                            print "Warning: loader irrelevant range size is less than 4."
+                        break
+        sh.liRange = lirange
 
     def __build_safe_exception_handler_map(self):
         seh_map = []
@@ -191,7 +199,7 @@ class PE(object):
                     seh_map.append([seh_rva, seh_index])
         return seh_map
 
-    def hasMZSignature(self, rd): 
+    def hasMZSignature(self, rd):
         """
         Check for MZ signature.
 
@@ -206,7 +214,7 @@ class PE(object):
         if sign == "MZ":
             return True
         return False
-        
+
     def hasPESignature(self, rd):
         """
         Check for PE signature.
@@ -223,7 +231,7 @@ class PE(object):
         if sign == "PE":
             return True
         return False
-        
+
     def validate(self):
         """
         Performs validations over some fields of the PE structure to determine if the loaded file has a valid PE format.
@@ -233,16 +241,16 @@ class PE(object):
         # Ange Albertini (@angie4771) can kill me for this! :)
         if self.dosHeader.e_magic.value != consts.MZ_SIGNATURE:
             raise excep.PEException("Invalid MZ signature. Found %d instead of %d." % (self.dosHeader.magic.value, consts.MZ_SIGNATURE))
-        
+
         if self.dosHeader.e_lfanew.value > len(self):
             raise excep.PEException("Invalid e_lfanew value. Probably not a PE file.")
-            
-        if self.ntHeaders.signature.value != consts.PE_SIGNATURE: 
+
+        if self.ntHeaders.signature.value != consts.PE_SIGNATURE:
             raise excep.PEException("Invalid PE signature. Found %d instead of %d." % (self.ntHeaders.optionaHeader.signature.value, consts.PE_SIGNATURE))
-            
+
         if self.ntHeaders.optionalHeader.numberOfRvaAndSizes.value > 0x10:
             print excep.PEWarning("Suspicious value for NumberOfRvaAndSizes: %d." % self.ntHeaders.optionaHeader.numberOfRvaAndSizes.value)
-            
+
     def readFile(self, pathToFile):
         """
         Returns data from a file.
@@ -257,7 +265,7 @@ class PE(object):
         data = fd.read()
         fd.close()
         return data
-    
+
     def write(self, filename = ""):
         """
         Writes data from L{PE} object to a file.
@@ -275,7 +283,7 @@ class PE(object):
                 raise IOError("File could not be opened for write operations.")
         else:
             return file_data
-            
+
     def __write(self, thePath, theData):
         """
         Write data to a file.
@@ -285,23 +293,23 @@ class PE(object):
         
         @type theData: str
         @param theData: The data to write.
-        """    
+        """
         fd = open(thePath, "wb")
         fd.write(theData)
         fd.close()
-                        
+
     def __len__(self):
         return len(str(self))
-        
+
     def __str__(self):
         if self._data is None and self._pathToFile is None:
             padding = "\x00" * (self.sectionHeaders[0].pointerToRawData.value - self._getPaddingToSectionOffset())
         else:
             padding = self._getPaddingDataToSectionOffset()
-        
+
         pe = str(self.dosHeader) + str(self.dosStub) + str(self.ntHeaders) + str(self.sectionHeaders) + str(padding) + str(self.sections) + str(self.overlay)
         #if not self._fastLoad:
-            #pe = self._updateDirectoriesData(pe)
+        #pe = self._updateDirectoriesData(pe)
         return pe
 
     def _updateDirectoriesData(self, peStr):
@@ -316,7 +324,7 @@ class PE(object):
         """
         dataDirs = self.ntHeaders.optionalHeader.dataDirectory
         wr = utils.WriteData(data)
-        
+
         for dir in dataDirs:
             dataToWrite = str(dir.info)
             if len(dataToWrite) != dir.size.value and self._verbose:
@@ -324,7 +332,7 @@ class PE(object):
             wr.setOffset(self.getOffsetFromRva(dir.rva.value))
             wr.write(dataToWrite)
         return str(wr)
-        
+
     def _getPaddingDataToSectionOffset(self):
         """
         Returns the data between the last section header and the begenning of data from the first section.
@@ -335,7 +343,7 @@ class PE(object):
         start = self._getPaddingToSectionOffset()
         end = self.sectionHeaders[0].pointerToRawData.value - start
         return self._data[start:start+end]
-        
+
     def _getSignature(self, readDataInstance, dataDirectoryInstance):
         """
         Returns the digital signature within a digital signed PE file.
@@ -353,16 +361,16 @@ class PE(object):
         """
         signature = ""
 
-        if readDataInstance is not None and dataDirectoryInstance is not None:        
+        if readDataInstance is not None and dataDirectoryInstance is not None:
             securityDirectory = dataDirectoryInstance[consts.SECURITY_DIRECTORY]
-            
+
             if(securityDirectory.rva.value and securityDirectory.size.value):
                 readDataInstance.setOffset(self.getOffsetFromRva(securityDirectory.rva.value))
-                
+
                 signature = readDataInstance.read(securityDirectory.size.value)
         else:
             raise excep.InstanceErrorException("ReadData instance or DataDirectory instance not specified.")
-            
+
         return signature
 
     def _getOverlay(self, readDataInstance, sectionHdrsInstance):
@@ -380,7 +388,7 @@ class PE(object):
         
         @raise InstanceErrorException: If the C{readDataInstance} or the C{sectionHdrsInstance} were not specified.
         """
-        if readDataInstance is not None and sectionHdrsInstance is not None:            
+        if readDataInstance is not None and sectionHdrsInstance is not None:
             # adjust the offset in readDataInstance to the RawOffset + RawSize of the last section
             try:
                 offset = sectionHdrsInstance[-1].pointerToRawData.value + sectionHdrsInstance[-1].sizeOfRawData.value
@@ -390,9 +398,9 @@ class PE(object):
                     print "It seems that the file has no overlay data."
         else:
             raise excep.InstanceErrorException("ReadData instance or SectionHeaders instance not specified.")
-            
+
         return readDataInstance.data[readDataInstance.offset:]
-        
+
     def getOffsetFromRva(self, rva):
         """
         Converts an offset to an RVA.
@@ -405,14 +413,14 @@ class PE(object):
         """
         offset = -1
         s = self.getSectionByRva(rva)
-        
+
         if s != offset:
             offset = (rva - self.sectionHeaders[s].virtualAddress.value) + self.sectionHeaders[s].pointerToRawData.value
         else:
             offset = rva
-        
+
         return offset
-        
+
     def getRvaFromOffset(self, offset):
         """
         Converts a RVA to an offset.
@@ -425,12 +433,12 @@ class PE(object):
         """
         rva = -1
         s = self.getSectionByOffset(offset)
-        
+
         if s:
             rva = (offset - self.sectionHeaders[s].pointerToRawData.value) + self.sectionHeaders[s].virtualAddress.value
-            
+
         return rva
-        
+
     def getSectionByOffset(self, offset):
         """
         Given an offset in the file, tries to determine the section this offset belong to.
@@ -447,7 +455,7 @@ class PE(object):
                 index = i
                 break
         return index
-    
+
     def getSectionIndexByName(self, name):
         """
         Given a string representing a section name, tries to find the section index.
@@ -459,7 +467,7 @@ class PE(object):
         @return: The index, starting at 0, of the section.
         """
         index = -1
-        
+
         if name:
             for i in range(len(self.sectionHeaders)):
                 if self.sectionHeaders[i].name.value.find(name) >= 0:
@@ -477,11 +485,11 @@ class PE(object):
         @rtype: int
         @return: An index, starting at 1, that represents the section the given RVA belongs to.
         """
-        
+
         index = -1
         if rva < self.sectionHeaders[0].virtualAddress.value:
             return index
-        
+
         for i in range(len(self.sectionHeaders)):
             fa = self.ntHeaders.optionalHeader.fileAlignment.value
             prd = self.sectionHeaders[i].pointerToRawData.value
@@ -495,7 +503,7 @@ class PE(object):
                 break
 
         return index
-        
+
     @staticmethod
     def getDosStub():
         """
@@ -518,7 +526,7 @@ class PE(object):
     def fullLoad(self):
         """Parse all the directories in the PE file."""
         self._parseDirectories(self.ntHeaders.optionalHeader.dataDirectory, self.PE_TYPE)
-        
+
     def _internalParse(self, readDataInstance):
         """
         Populates the attributes of the L{PE} object. 
@@ -527,31 +535,31 @@ class PE(object):
         @param readDataInstance: A L{ReadData} instance with the data of a PE file.
         """
         self.dosHeader = DosHeader.parse(readDataInstance)
-        
+
         self.dosStub = readDataInstance.read(self.dosHeader.e_lfanew.value - readDataInstance.offset)
         self.ntHeaders = NtHeaders.parse(readDataInstance)
-        
+
         if self.ntHeaders.optionalHeader.magic.value == consts.PE32:
             self.PE_TYPE = consts.PE32
         elif self.ntHeaders.optionalHeader.magic.value == consts.PE64:
             self.PE_TYPE = consts.PE64
             readDataInstance.setOffset(readDataInstance.tell() - OptionalHeader().sizeof())
             self.ntHeaders.optionalHeader = OptionalHeader64.parse(readDataInstance)
-            
+
         self.sectionHeaders = SectionHeaders.parse(readDataInstance,  self.ntHeaders.fileHeader.numberOfSections.value)
-        
+
         # as padding is possible between the last section header and the begenning of the first section
         # we must adjust the offset in readDataInstance to point to the first byte of the first section.
         readDataInstance.setOffset(self.sectionHeaders[0].pointerToRawData.value)
-        
+
         self.sections = Sections.parse(readDataInstance,  self.sectionHeaders)
-        
+
         self.overlay = self._getOverlay(readDataInstance,  self.sectionHeaders)
         self.signature = self._getSignature(readDataInstance,  self.ntHeaders.optionalHeader.dataDirectory)
-        
+
         if not self._fastLoad:
             self._parseDirectories(self.ntHeaders.optionalHeader.dataDirectory, self.PE_TYPE)
-            
+
     def addSection(self, data, name =".pype32\x00", flags = 0x60000000):
         """
         Adds a new section to the existing L{PE} instance.
@@ -570,40 +578,53 @@ class PE(object):
 
         padding = "\xcc" * (fa - len(data))
         sh = SectionHeader()
-        
+
         if len(self.sectionHeaders):
             # get the va, vz, ra and rz of the last section in the array of section headers
             vaLastSection = self.sectionHeaders[-1].virtualAddress.value
             sizeLastSection = self.sectionHeaders[-1].misc.value
             pointerToRawDataLastSection = self.sectionHeaders[-1].pointerToRawData.value
             sizeOfRawDataLastSection = self.sectionHeaders[-1].sizeOfRawData.value
-            
+
             sh.virtualAddress.value = self._adjustSectionAlignment(vaLastSection + sizeLastSection,  fa, sa)
             sh.pointerToRawData.value = self._adjustFileAlignment(pointerToRawDataLastSection + sizeOfRawDataLastSection,  fa)
 
         sh.misc.value = self._adjustSectionAlignment(len(data),  fa,  sa) or consts.DEFAULT_PAGE_SIZE
-        sh.sizeOfRawData.value = self._adjustFileAlignment(len(data),  fa) or consts.DEFAULT_FILE_ALIGNMENT            
+        sh.sizeOfRawData.value = self._adjustFileAlignment(len(data),  fa) or consts.DEFAULT_FILE_ALIGNMENT
         sh.characteristics.value = flags
         sh.name.value = name
-        
+
         self.sectionHeaders.append(sh)
         self.sections.append(data + padding)
-        
+
         self.ntHeaders.fileHeader.numberOfSections.value += 1
 
-    def __adjust_single_section_header(self, s_index, raw_adder):
+    def __adjust_single_section_header(self, s_index, data, padding='\x00'):
         fa = self.ntHeaders.optionalHeader.fileAlignment.value
-        sa = self.ntHeaders.optionalHeader.sectionAlignment.value
+        # sa = self.ntHeaders.optionalHeader.sectionAlignment.value
         try:
-            # we are in the last section or self.sectionHeaders has only 1 sectionHeader instance
             old_vz = self.sectionHeaders[s_index].misc.value
             old_rz = self.sectionHeaders[s_index].sizeOfRawData.value
-
-            new_rz = self._adjustFileAlignment(old_rz + raw_adder, fa)
+            # new_rz = self._adjustFileAlignment(old_rz + raw_adder, fa)
+            # self.sectionHeaders[s_index].sizeOfRawData.value = new_rz
+            # new_vz = self._adjustSectionAlignment(new_rz, fa, sa)
+            # self.sectionHeaders[s_index].misc.value = new_vz if new_vz > old_vz else old_vz
+            new_vz = old_vz + len(data)
+            new_rz = self._adjustFileAlignment(new_vz, fa)
+            self.sectionHeaders[s_index].misc.value = new_vz
             self.sectionHeaders[s_index].sizeOfRawData.value = new_rz
-            new_vz = self._adjustSectionAlignment(new_rz, fa, sa)
-            self.sectionHeaders[s_index].misc.value = new_vz if new_vz > old_vz else old_vz
 
+            if old_vz < old_rz:
+                old_data = self.sections[s_index][:old_vz]
+                old_data += data
+                self.sections[s_index] = old_data
+            elif old_vz == old_rz:
+                self.sections[s_index] += data
+            else:
+                self.sections[s_index] += padding * (old_vz-old_rz) + data
+
+            if new_vz % fa:
+                self.sections[s_index] += padding * (fa - new_vz % fa)
         except IndexError:
             raise IndexError("list index out of range.")
 
@@ -647,23 +668,7 @@ class PE(object):
             elif s_index == consts.IAT_DIRECTORY:
                 dde = self.ntHeaders.optionalHeader.dataDirectory[data_dir_index]
                 dde.rva.value += va_adder
-
-    def __adjust_base_relocations(self, s_index, va_adders):
-        # adjust base relocation
-        relocations = []
-        # 1. adjust base relocation's base data in each section
-        for rva, index, data_index in self.relocation_map:
-            rva_adder = 0 if index < s_index else va_adders[index - s_index]
-            new_rva = rva + rva_adder
-            relocations.append(new_rva)
-            if data_index < s_index:
-                continue
-            data_adder = va_adders[data_index - s_index]
-            new_data = self.getDwordAtRva(new_rva).value + data_adder
-            new_dword = datatypes.DWORD(new_data)
-            self.set_data_at_rva(new_rva, str(new_dword))
-
-        # 2. generate base relocation section
+    def __marshal_relocation_section(self, relocations):
         relocations.sort()
         base_relocations = directories.ImageBaseRelocation()
         virtual_address = 0
@@ -696,8 +701,28 @@ class PE(object):
                 base_relocation_entry.items.append(datatypes.WORD(0))
                 # calculate relocation entry size
                 base_relocation_entry.sizeOfBlock.value = len(base_relocation_entry)
+        return base_relocations
+
+    def __adjust_base_relocations(self, s_index, va_adders):
+        # adjust base relocation
+        relocations = []
+        # 1. adjust base relocation's base data in each section
+        for rva, index, data_index in self.relocation_map:
+            rva_adder = 0 if index < s_index else va_adders[index - s_index]
+            new_rva = rva + rva_adder
+            relocations.append(new_rva)
+            if data_index < s_index:
+                continue
+            data_adder = va_adders[data_index - s_index]
+            new_data = self.getDwordAtRva(new_rva).value + data_adder
+            new_dword = datatypes.DWORD(new_data)
+            self.set_data_at_rva(new_rva, str(new_dword))
+
+        # 2. generate base relocation section
+        base_relocations = self.__marshal_relocation_section(relocations)
+
+        # 3. update relocation directory
         relocation_directory = self.ntHeaders.optionalHeader.dataDirectory[consts.RELOCATION_DIRECTORY]
-        # update relocation direction
         relocation_directory.info = base_relocations
         relocation_directory.size.value = sum([len(x) for x in base_relocations])
         self.set_data_at_rva(relocation_directory.rva, str(base_relocations))
@@ -715,36 +740,36 @@ class PE(object):
         @raise IndexError: If an invalid C{sectionIndex} was specified.
         @raise SectionHeadersException: If there is not section to extend.
         """
-        
+
         fa = self.ntHeaders.optionalHeader.fileAlignment.value
         sa = self.ntHeaders.optionalHeader.sectionAlignment.value
-        
         if len(self.sectionHeaders):
             if len(self.sectionHeaders) == sectionIndex:
-                self.__adjust_single_section_header(-1, len(data))
+                self.__adjust_single_section_header(-1, data)
 
-                vz = self.sectionHeaders[-1].misc.value
-                rz = self.sectionHeaders[-1].sizeOfRawData.value
+                # vz = self.sectionHeaders[-1].misc.value
+                # rz = self.sectionHeaders[-1].sizeOfRawData.value
+                #
+                # if vz < rz:
+                #     print "WARNING: VirtualSize (%x) is less than SizeOfRawData (%x)" % (vz,  rz)
 
-                if vz < rz:
-                    print "WARNING: VirtualSize (%x) is less than SizeOfRawData (%x)" % (vz,  rz)
-                    
-                if len(data) % fa == 0:
-                    self.sections[-1] += data
-                else:
-                    self.sections[-1] += data + "\xcc" * (fa - len(data) % fa)
-                
+                # if len(data) % fa == 0:
+                #     self.sections[-1] += data
+                # else:
+                #     self.sections[-1] += data + "\xcc" * (fa - len(data) % fa)
+
+                self.__adjust_base_relocations(sectionIndex, [])
             else:
                 # if it is not the last section ...
                 try:
                     # adjust data of the section the user wants to extend
                     counter = sectionIndex - 1
-                    self.__adjust_single_section_header(counter, len(data))
-                    if len(data) % fa == 0:
-                        self.sections[counter] += data
-                    else:
-                        self.sections[counter] += data + "\xcc" * (fa - len(data) % fa)
-                         
+                    self.__adjust_single_section_header(counter, data)
+                    # if len(data) % fa == 0:
+                    #     self.sections[counter] += data
+                    # else:
+                    #     self.sections[counter] += data + "\xcc" * (fa - len(data) % fa)
+
                     counter += 1
 
                     va_adders = []
@@ -753,7 +778,7 @@ class PE(object):
                         vaPreviousSection = self.sectionHeaders[counter - 1].virtualAddress.value
                         rzPreviousSection = self.sectionHeaders[counter - 1].sizeOfRawData.value
                         roPreviousSection = self.sectionHeaders[counter - 1].pointerToRawData.value
-                        
+
                         # adjust VA and RO of the next section
                         new_va = self._adjustSectionAlignment(vzPreviousSection + vaPreviousSection, fa, sa)
                         va_adders.append(new_va - self.sectionHeaders[counter].virtualAddress.value)
@@ -762,12 +787,12 @@ class PE(object):
                         self.sectionHeaders[counter].pointerToRawData.value = self._adjustFileAlignment(
                             rzPreviousSection + roPreviousSection, fa)
 
-                        vz = self.sectionHeaders[counter].virtualAddress.value 
-                        rz = self.sectionHeaders[counter].pointerToRawData.value
-                        
-                        if vz < rz:
-                            print "WARNING: VirtualSize (%x) is less than SizeOfRawData (%x)" % (vz,  rz)
-                            
+                        # vz = self.sectionHeaders[counter].virtualAddress.value
+                        # rz = self.sectionHeaders[counter].pointerToRawData.value
+                        #
+                        # if vz < rz:
+                        #     print "WARNING: VirtualSize (%x) is less than SizeOfRawData (%x)" % (vz,  rz)
+
                         counter += 1
 
                     counter = sectionIndex
@@ -778,15 +803,16 @@ class PE(object):
 
                     self.__adjust_base_relocations(sectionIndex, va_adders)
 
+
                 except IndexError:
                     raise IndexError("list index out of range.")
-                
+
         else:
             raise excep.SectionHeadersException("There is no section to extend.")
         self._fix_pe()
         self.relocation_map = self.__build_relocation_map()
         self.seh_map = self.__build_safe_exception_handler_map()
-        self.__update_data_section_loader_irrelevant_field()
+        self.__update_data_section_loader_irrelevant_range()
 
     def _fix_pe(self):
         """
@@ -796,7 +822,6 @@ class PE(object):
         fa = op_header.fileAlignment.value
         sa = op_header.sectionAlignment.value
 
-        size_of_image = 0
         size_of_code = 0
         size_of_init_data = 0
         size_of_uninit_data = 0
@@ -826,6 +851,29 @@ class PE(object):
         if size_of_image > op_header.sizeOfImage.value:
             op_header.sizeOfImage.value = self._adjustSectionAlignment(size_of_image, fa, sa)
 
+    def add_relocation(self, location_rvas):
+        image_base = self.ntHeaders.optionalHeader.imageBase
+        relocation_map = []
+        for location_rva in location_rvas:
+            index = self.getSectionByRva(location_rva)
+            data_index = self.getSectionByRva(self.getDwordAtRva(location_rva) - image_base)
+            relocation_map.append([location_rva, index, data_index])
+        self.relocation_map += relocation_map
+        base_relocations = self.__marshal_relocation_section([x[0] for x in self.relocation_map])
+
+        relocation_directory = self.ntHeaders.optionalHeader.dataDirectory[consts.RELOCATION_DIRECTORY]
+        relo_index = self.getSectionByRva(relocation_directory.rva)
+        old_rz = self.sectionHeaders[relo_index].sizeOfRawData.value
+        data = str(base_relocations)
+        if len(data) > old_rz:
+            self.extendSection(relo_index+1, '\x00'*(len(data)-old_rz))
+        else:
+            # update relocation directory
+            relocation_directory.info = base_relocations
+            relocation_directory.size.value = sum([len(x) for x in base_relocations])
+            self.set_data_at_rva(relocation_directory.rva, str(base_relocations))
+            self.__update_data_section_loader_irrelevant_range()
+
     def encrypt_data_section(self, translator):
         # get .data section index
         data_index = 0
@@ -834,37 +882,53 @@ class PE(object):
                 break
             data_index += 1
 
+        optional_header = self.ntHeaders.optionalHeader
+        image_base = optional_header.imageBase.value
+        data_sh = self.sectionHeaders[data_index]
+        data_rva = data_sh.virtualAddress.value + data_sh.misc.value
+
+        # generate variables and calculate encrypted data size
+        data = ""
+        encrypt_size = 0
+        lirange = data_sh.liRange
+        for start, size in lirange:
+            data += str(datatypes.DWORD(start+image_base)) + str(datatypes.DWORD(size))
+            encrypt_size += size
+
+        # calculate variables size
+        data_size = len(data)
+        # insert variables
+        self.extendSection(data_index+1, data)
+        # add relocation information
+        self.add_relocation(range(data_rva, data_rva+data_size, 8))
+
         # get the bytes in .data section, which is permitted to encrypt
         s_data = self.sections[data_index]
-        data_sh = self.sectionHeaders[data_index]
-        data_start = data_sh.pointerToRawData.value
-        data_loader_irrelevant_start = data_sh.pointerToLoaderIrrelevantRawData.value
-        data_loader_irrelevant_size = data_sh.sizeOfLoaderIrrelevantRawData.value
-        data_list = list(s_data[data_loader_irrelevant_start-data_start:data_loader_irrelevant_start-data_start+data_loader_irrelevant_size])
-
+        data_start = data_sh.virtualAddress.value
+        data_list = list(s_data)
         # encrypt each byte
-        for i in range(len(data_list)):
-            data_list[i] = chr(translator.encryptor(ord(data_list[i])))
+        for start, size in lirange:
+            for i in range(start-data_start, start-data_start+size):
+                data_list[i] = chr(translator.encryptor(ord(data_list[i])))
         data = ''.join(data_list)
         # write back to the .data section
-        self.set_data_at_rva(self.getRvaFromOffset(data_loader_irrelevant_start), data)
+        self.sections[data_index] = data
 
         # get entry point virtual address
-        optional_header = self.ntHeaders.optionalHeader
         entry = optional_header.addressOfEntryPoint.value
         # get index of the section which entry resides
         code_index = self.getSectionByRva(entry)
         # get the relative virtual address of junk code
-        df_rva = self.sectionHeaders[code_index].sizeOfRawData.value + self.sectionHeaders[
+        df_rva = self.sectionHeaders[code_index].misc.value + self.sectionHeaders[
             code_index].virtualAddress.value
         # generate data section decrypt function
-        decode_func = translator.decryptor(df_rva, entry, self.getRvaFromOffset(data_loader_irrelevant_start),
-                                           data_loader_irrelevant_size)
+        decode_func = translator.decryptor(df_rva, entry, data_rva + image_base, data_size)
         # extend the code section and insert decrypt function
         self.extendSection(code_index+1, decode_func)
+        data_sh_adder = data_sh.virtualAddress.value - data_start
         # relocate the decrypt function after shift the data section because of extending code section
-        translator.relocator(self, df_rva, data_sh.virtualAddress.value)
-        return df_rva, data_loader_irrelevant_size
+        translator.relocator(self, df_rva, data_rva + data_sh_adder + image_base)
+        return df_rva, encrypt_size
 
     def _adjustFileAlignment(self, value, fileAlignment):
         """
@@ -882,15 +946,15 @@ class PE(object):
         if fileAlignment > consts.DEFAULT_FILE_ALIGNMENT:
             if not utils.powerOfTwo(fileAlignment):
                 print "Warning: FileAlignment is greater than DEFAULT_FILE_ALIGNMENT (0x200) and is not power of two."
-        
+
         if fileAlignment < consts.DEFAULT_FILE_ALIGNMENT:
             return value
-            
+
         if fileAlignment and value % fileAlignment:
             return ((value / fileAlignment) + 1) * fileAlignment
-            
+
         return value
-        
+
     def _adjustSectionAlignment(self, value, fileAlignment, sectionAlignment):
         """
         Align a value to C{SectionAligment}.
@@ -910,14 +974,14 @@ class PE(object):
         if fileAlignment < consts.DEFAULT_FILE_ALIGNMENT:
             if fileAligment != sectionAlignment:
                 print "FileAlignment does not match SectionAlignment."
-        
+
         if sectionAlignment < consts.DEFAULT_PAGE_SIZE:
             sectionAlignment = fileAlignment
-            
+
         if sectionAlignment and value % sectionAlignment:
             return sectionAlignment * ((value / sectionAlignment) + 1)
         return value
-    
+
     def getDwordAtRva(self, rva):
         """
         Returns a C{DWORD} from a given RVA. 
@@ -929,7 +993,7 @@ class PE(object):
         @return: The L{DWORD} obtained at the given RVA.
         """
         return datatypes.DWORD.parse(utils.ReadData(self.getDataAtRva(rva,  4)))
-        
+
     def getWordAtRva(self, rva):
         """
         Returns a C{WORD} from a given RVA. 
@@ -941,7 +1005,7 @@ class PE(object):
         @return: The L{WORD} obtained at the given RVA.
         """
         return datatypes.WORD.parse(utils.ReadData(self.getDataAtRva(rva,  2)))
-        
+
     def getDwordAtOffset(self, offset):
         """
         Returns a C{DWORD} from a given offset. 
@@ -953,7 +1017,7 @@ class PE(object):
         @return: The L{DWORD} obtained at the given offset.
         """
         return datatypes.DWORD.parse(utils.ReadData(self.getDataAtOffset(offset,  4)))
-        
+
     def getWordAtOffset(self, offset):
         """
         Returns a C{WORD} from a given offset. 
@@ -965,7 +1029,7 @@ class PE(object):
         @return: The L{WORD} obtained at the given offset.
         """
         return datatypes.WORD.parse(utils.ReadData(self.getDataAtOffset(offset, 2)))
-    
+
     def getQwordAtRva(self, rva):
         """
         Returns a C{QWORD} from a given RVA. 
@@ -977,7 +1041,7 @@ class PE(object):
         @return: The L{QWORD} obtained at the given RVA.
         """
         return datatypes.QWORD.parse(utils.ReadData(self.getDataAtRva(rva,  8)))
-        
+
     def getQwordAtOffset(self, offset):
         """
         Returns a C{QWORD} from a given offset. 
@@ -989,7 +1053,7 @@ class PE(object):
         @return: The L{QWORD} obtained at the given offset.
         """
         return datatypes.QWORD.parse(utils.ReadData(self.getDataAtOffset(offset,  8)))
-        
+
     def getDataAtRva(self, rva, size):
         """
         Gets binary data at a given RVA.
@@ -1004,7 +1068,7 @@ class PE(object):
         @return: The data obtained at the given RVA.
         """
         return self.getDataAtOffset(self.getOffsetFromRva(rva),  size)
-    
+
     def getDataAtOffset(self, offset, size):
         """
         Gets binary data at a given offset.
@@ -1020,7 +1084,7 @@ class PE(object):
         """
         data = str(self)
         return data[offset:offset+size]
-    
+
     def readStringAtRva(self, rva):
         """
         Returns a L{String} object from a given RVA. 
@@ -1038,7 +1102,7 @@ class PE(object):
             rva += 1
             d = self.getDataAtRva(rva, 1)
         return resultStr
-        
+
     def isExe(self):
         """
         Determines if the current L{PE} instance is an Executable file.
@@ -1049,7 +1113,7 @@ class PE(object):
         if not self.isDll() and not self.isDriver() and ( consts.IMAGE_FILE_EXECUTABLE_IMAGE & self.ntHeaders.fileHeader.characteristics.value) == consts.IMAGE_FILE_EXECUTABLE_IMAGE:
             return True
         return False
-    
+
     def isDll(self):
         """
         Determines if the current L{PE} instance is a Dynamic Link Library file.
@@ -1060,7 +1124,7 @@ class PE(object):
         if (consts.IMAGE_FILE_DLL & self.ntHeaders.fileHeader.characteristics.value) == consts.IMAGE_FILE_DLL:
             return True
         return False
-    
+
     def isDriver(self):
         """
         Determines if the current L{PE} instance is a driver (.sys) file.
@@ -1072,11 +1136,11 @@ class PE(object):
         imports = self.ntHeaders.optionalHeader.dataDirectory[consts.IMPORT_DIRECTORY].info
         for module in imports:
             modules.append(module.metaData.moduleName.value.lower())
-        
+
         if set(["ntoskrnl.exe", "hal.dll", "ndis.sys", "bootvid.dll", "kdcom.dll"]).intersection(modules):
             return True
         return False
-    
+
     def isPe32(self):
         """
         Determines if the current L{PE} instance is a PE32 file.
@@ -1087,7 +1151,7 @@ class PE(object):
         if self.ntHeaders.optionalHeader.magic.value == consts.PE32:
             return True
         return False
-    
+
     def isPe64(self):
         """
         Determines if the current L{PE} instance is a PE64 file.
@@ -1098,7 +1162,7 @@ class PE(object):
         if self.ntHeaders.optionalHeader.magic.value == consts.PE64:
             return True
         return False
-    
+
     def isPeBounded(self):
         """
         Determines if the current L{PE} instance is bounded, i.e. has a C{BOUND_IMPORT_DIRECTORY}.
@@ -1163,18 +1227,18 @@ class PE(object):
         @param magic: (Optional) The type of PE. This value could be L{consts.PE32} or L{consts.PE64}.
         """
         directories = [(consts.EXPORT_DIRECTORY, self._parseExportDirectory),
-                         (consts.IMPORT_DIRECTORY, self._parseImportDirectory),
-                         (consts.RESOURCE_DIRECTORY, self._parseResourceDirectory),
-                         (consts.EXCEPTION_DIRECTORY, self._parseExceptionDirectory),
-                         (consts.RELOCATION_DIRECTORY, self._parseRelocsDirectory),
-                         (consts.TLS_DIRECTORY, self._parseTlsDirectory),
-                         (consts.DEBUG_DIRECTORY, self._parseDebugDirectory),
-                         (consts.BOUND_IMPORT_DIRECTORY, self._parseBoundImportDirectory),
-                         (consts.DELAY_IMPORT_DIRECTORY, self._parseDelayImportDirectory),
-                         (consts.CONFIGURATION_DIRECTORY, self._parseLoadConfigDirectory),
-                         (consts.NET_METADATA_DIRECTORY, self._parseNetDirectory),
-                         (consts.IAT_DIRECTORY, None)]
-        
+                       (consts.IMPORT_DIRECTORY, self._parseImportDirectory),
+                       (consts.RESOURCE_DIRECTORY, self._parseResourceDirectory),
+                       (consts.EXCEPTION_DIRECTORY, self._parseExceptionDirectory),
+                       (consts.RELOCATION_DIRECTORY, self._parseRelocsDirectory),
+                       (consts.TLS_DIRECTORY, self._parseTlsDirectory),
+                       (consts.DEBUG_DIRECTORY, self._parseDebugDirectory),
+                       (consts.BOUND_IMPORT_DIRECTORY, self._parseBoundImportDirectory),
+                       (consts.DELAY_IMPORT_DIRECTORY, self._parseDelayImportDirectory),
+                       (consts.CONFIGURATION_DIRECTORY, self._parseLoadConfigDirectory),
+                       (consts.NET_METADATA_DIRECTORY, self._parseNetDirectory),
+                       (consts.IAT_DIRECTORY, None)]
+
         for directory in directories:
             data_dir = dataDirectoryInstance[directory[0]]
             if data_dir.rva.value and data_dir.size.value:
@@ -1199,7 +1263,7 @@ class PE(object):
         @return: The C{IMAGE_RESOURCE_DIRECTORY} data.
         """
         return self.getDataAtRva(rva, size)
-    
+
     def _parseExceptionDirectory(self, rva, size, magic = consts.PE32):
         """
         Parses the C{IMAGE_EXCEPTION_DIRECTORY} directory.
@@ -1217,7 +1281,7 @@ class PE(object):
         @return: The C{IMAGE_EXCEPTION_DIRECTORY} data.
         """
         return self.getDataAtRva(rva, size)
-        
+
     def _parseDelayImportDirectory(self, rva, size, magic = consts.PE32):
         """
         Parses the delay imports directory.
@@ -1235,7 +1299,7 @@ class PE(object):
         @return: The delay imports directory data.
         """
         return self.getDataAtRva(rva, size)
-        
+
     def _parseBoundImportDirectory(self, rva, size, magic = consts.PE32):
         """
         Parses the bound import directory.
@@ -1255,7 +1319,7 @@ class PE(object):
         data = self.getDataAtRva(rva, size)
         rd = utils.ReadData(data)
         boundImportDirectory = directories.ImageBoundImportDescriptor.parse(rd)
-        
+
         # parse the name of every bounded import.
         for i in range(len(boundImportDirectory) - 1):
             if hasattr(boundImportDirectory[i],  "forwarderRefsList"):
@@ -1263,7 +1327,7 @@ class PE(object):
                     for forwarderRefEntry in boundImportDirectory[i].forwarderRefsList:
                         offset = forwarderRefEntry.offsetModuleName.value
                         forwarderRefEntry.moduleName = self.readStringAtRva(offset + rva)
-                        
+
             offset = boundImportDirectory[i].offsetModuleName.value
             boundImportDirectory[i].moduleName = self.readStringAtRva(offset + rva)
         return boundImportDirectory
@@ -1331,14 +1395,14 @@ class PE(object):
         """
         data = self.getDataAtRva(rva, size)
         rd = utils.ReadData(data)
-        
+
         if magic == consts.PE32:
             return directories.TLSDirectory.parse(rd)
         elif magic == consts.PE64:
             return directories.TLSDirectory64.parse(rd)
         else:
             raise excep.InvalidParameterException("Wrong magic")
-        
+
     def _parseRelocsDirectory(self, rva, size, magic = consts.PE32):
         """
         Parses the relocation directory.
@@ -1358,13 +1422,13 @@ class PE(object):
         data = self.getDataAtRva(rva,  size)
         #print "Length Relocation data: %x" % len(data)
         rd = utils.ReadData(data)
-        
+
         relocsArray = directories.ImageBaseRelocation()
         while rd.offset < size:
             relocEntry = directories.ImageBaseRelocationEntry.parse(rd)
             relocsArray.append(relocEntry)
         return relocsArray
-        
+
     def _parseExportDirectory(self, rva, size, magic = consts.PE32):
         """
         Parses the C{IMAGE_EXPORT_DIRECTORY} directory.
@@ -1383,60 +1447,60 @@ class PE(object):
         """
         data = self.getDataAtRva(rva,  size)
         rd = utils.ReadData(data)
-        
+
         iet = directories.ImageExportTable.parse(rd)
-        
+
         auxFunctionRvaArray = list()
-        
+
         numberOfNames = iet.numberOfNames.value
         addressOfNames = iet.addressOfNames.value
         addressOfNameOrdinals = iet.addressOfNameOrdinals.value
         addressOfFunctions = iet.addressOfFunctions.value
-        
+
         # populate the auxFunctionRvaArray
         for i in range(iet.numberOfFunctions.value):
             auxFunctionRvaArray.append(self.getDwordAtRva(addressOfFunctions).value)
             addressOfFunctions += datatypes.DWORD().sizeof()
-            
+
         for i in range(numberOfNames):
-            
+
             nameRva = self.getDwordAtRva(addressOfNames).value
             nameOrdinal = self.getWordAtRva(addressOfNameOrdinals).value
             exportName = self.readStringAtRva(nameRva).value
-            
+
             entry = directories.ExportTableEntry()
-            
+
             ordinal = nameOrdinal + iet.base.value
             #print "Ordinal value: %d" % ordinal
             entry.ordinal.value = ordinal
-            
+
             entry.nameOrdinal.vaue = nameOrdinal
             entry.nameRva.value = nameRva
             entry.name.value = exportName
             entry.functionRva.value = auxFunctionRvaArray[nameOrdinal]
-            
+
             iet.exportTable.append(entry)
-            
+
             addressOfNames += datatypes.DWORD().sizeof()
             addressOfNameOrdinals += datatypes.WORD().sizeof()
-        
+
         #print "export table length: %d" % len(iet.exportTable)
-        
+
         #print "auxFunctionRvaArray: %r" % auxFunctionRvaArray
         for i in range(iet.numberOfFunctions.value):
             #print "auxFunctionRvaArray[%d]: %x" % (i,  auxFunctionRvaArray[i])
             if auxFunctionRvaArray[i] != iet.exportTable[i].functionRva.value:
                 entry = directories.ExportTableEntry()
-                
+
                 entry.functionRva.value = auxFunctionRvaArray[i]
                 entry.ordinal.value = iet.base.value + i
-                
+
                 iet.exportTable.append(entry)
-        
+
         #print "export table length: %d" % len(iet.exportTable)
         sorted(iet.exportTable, key=lambda entry:entry.ordinal)
         return iet
-        
+
     def _parseDebugDirectory(self, rva, size, magic = consts.PE32):
         """
         Parses the C{IMAGE_DEBUG_DIRECTORY} directory.
@@ -1453,12 +1517,12 @@ class PE(object):
         
         @rtype: L{ImageDebugDirectory}
         @return: A new L{ImageDebugDirectory} object.
-        """        
+        """
         debugDirData = self.getDataAtRva(rva, size)
         numberOfEntries = size / consts.SIZEOF_IMAGE_DEBUG_ENTRY32
         rd = utils.ReadData(debugDirData)
         return directories.ImageDebugDirectories.parse(rd,  numberOfEntries)
-        
+
     def _parseImportDirectory(self, rva, size, magic = consts.PE32):
         """
         Parses the C{IMAGE_IMPORT_DIRECTORY} directory.
@@ -1482,7 +1546,7 @@ class PE(object):
         #print "Length importsDirData: %d" % len(importsDirData)
         numberOfEntries = size / consts.SIZEOF_IMAGE_IMPORT_ENTRY32
         rd = utils.ReadData(importsDirData)
-        
+
         # In .NET binaries, the size of the data directory corresponding to the import table
         # is greater than the number of bytes in the file. Thats why we check for the last group of 5 null bytes
         # that indicates the end of the IMAGE_IMPORT_DESCRIPTOR array.
@@ -1496,15 +1560,15 @@ class PE(object):
             except excep.DataLengthException:
                 if self._verbose:
                     print "[!] Warning: DataLengthException detected!."
-                
+
         if numberOfEntries - 1 > count:
             numberOfEntries = count + 1
 
         iid = directories.ImageImportDescriptor.parse(rd, numberOfEntries)
         iidLength = len(iid)
-        
+
         peIsBounded = self.isPeBounded()
-        
+
         if magic == consts.PE64:
             ORDINAL_FLAG = consts.IMAGE_ORDINAL_FLAG64
             ADDRESS_MASK = consts.ADDRESS_MASK64
@@ -1513,64 +1577,64 @@ class PE(object):
             ADDRESS_MASK = consts.ADDRESS_MASK32
         else:
             raise InvalidParameterException("magic value %d is not PE64 nor PE32." % magic)
-        
+
         for i in range(iidLength -1):
             if iid[i].originalFirstThunk.value != 0:
                 iltRva = iid[i].originalFirstThunk.value
                 iatRva = iid[i].firstThunk.value
-                
+
                 if magic == consts.PE64:
                     entry = self.getQwordAtRva(iltRva).value
                 elif magic == consts.PE32:
                     entry = self.getDwordAtRva(iltRva).value
 
                 while entry != 0:
-                    
+
                     if magic == consts.PE64:
                         iatEntry = directories.ImportAddressTableEntry64()
                     elif magic == consts.PE32:
                         iatEntry = directories.ImportAddressTableEntry()
-                        
+
                     iatEntry.originalFirstThunk.value = entry
-                    
+
                     if iatEntry.originalFirstThunk.value & ORDINAL_FLAG:
                         iatEntry.hint.value = None
                         iatEntry.name.value = iatEntry.originalFirstThunk.value & ADDRESS_MASK
-                    else: 
+                    else:
                         iatEntry.hint.value = self.getWordAtRva(iatEntry.originalFirstThunk.value).value
                         iatEntry.name.value = self.readStringAtRva(iatEntry.originalFirstThunk.value + 2).value
-                    
+
                     if magic == consts.PE64:
                         iatEntry.firstThunk.value = self.getQwordAtRva(iatRva).value
                         iltRva += 8
                         iatRva += 8
                         entry = self.getQwordAtRva(iltRva).value
                     elif magic == consts.PE32:
-                        iatEntry.firstThunk.value = self.getDwordAtRva(iatRva).value                        
+                        iatEntry.firstThunk.value = self.getDwordAtRva(iatRva).value
                         iltRva += 4
                         iatRva += 4
-                        entry = self.getDwordAtRva(iltRva).value                        
-                    
+                        entry = self.getDwordAtRva(iltRva).value
+
                     iid[i].iat.append(iatEntry)
 
             else:
                 iatRva = iid[i].firstThunk.value
-                
+
                 if magic == consts.PE64:
                     entry = self.getQwordAtRva(iatRva).value
                 elif magic == consts.PE32:
                     entry = self.getDwordAtRva(iatRva).value
-                    
+
                 while entry != 0:
 
                     if magic == consts.PE64:
                         iatEntry = directories.ImportAddressTableEntry64()
                     elif magic == consts.PE32:
                         iatEntry = directories.ImportAddressTableEntry()
-                    
+
                     iatEntry.firstThunk.value = entry
                     iatEntry.originalFirstThunk.value = 0
-                    
+
                     if not peIsBounded:
                         ft = iatEntry.firstThunk.value
 
@@ -1579,11 +1643,11 @@ class PE(object):
                             iatEntry.name.value = ft & ADDRESS_MASK
                         else:
                             iatEntry.hint.value = self.getWordAtRva(ft).value
-                            iatEntry.name.value = self.readStringAtRva(ft + 2).value                            
+                            iatEntry.name.value = self.readStringAtRva(ft + 2).value
                     else:
                         iatEntry.hint.value = None
                         iatEntry.name.value = None
-                
+
                     if magic == consts.PE64:
                         iatRva += 8
                         entry = self.getQwordAtRva(iatRva).value
@@ -1600,7 +1664,7 @@ class PE(object):
             iid[i].metaData.moduleName.value = self.readStringAtRva(iid[i].name.value).value
             iid[i].metaData.numberOfImports.value = len(iid[i].iat)
         return iid
-        
+
     def _parseNetDirectory(self, rva, size, magic = consts.PE32):
         """
         Parses the NET directory.
@@ -1617,39 +1681,39 @@ class PE(object):
         
         @rtype: L{NETDirectory}
         @return: A new L{NETDirectory} object.
-        """        
+        """
         if rva and size:
             # create a NETDirectory class to hold the data
             netDirectoryClass = directories.NETDirectory()
-            
+
             # parse the .NET Directory
             netDir = directories.NetDirectory.parse(utils.ReadData(self.getDataAtRva(rva,  size)))
-            
+
             netDirectoryClass.directory = netDir
-            
+
             # get the MetaData RVA and Size
             mdhRva = netDir.metaData.rva.value
             mdhSize = netDir.metaData.size.value
-            
+
             # read all the MetaData
             rd = utils.ReadData(self.getDataAtRva(mdhRva,  mdhSize))
-            
+
             # parse the MetaData headers
             netDirectoryClass.netMetaDataHeader = directories.NetMetaDataHeader.parse(rd)
-            
+
             # parse the NET metadata streams
             numberOfStreams = netDirectoryClass.netMetaDataHeader.numberOfStreams.value
             netDirectoryClass.netMetaDataStreams = directories.NetMetaDataStreams.parse(rd,  numberOfStreams)
-            
+
             for i in range(numberOfStreams):
                 name = netDirectoryClass.netMetaDataStreams[i].name.value
                 if name.find("#~") >= 0:
                     netDirectoryClass.netMetaDataStreams[i].info = directories.NetMetaDataTables.parse(utils.ReadData(rd.read(netDirectoryClass.netMetaDataStreams[i].size.value)))
                 else:
                     netDirectoryClass.netMetaDataStreams[i].info = rd.read(netDirectoryClass.netMetaDataStreams[i].size.value)
-            
+
         return netDirectoryClass
-    
+
     def getMd5(self):
         """
         Get MD5 hash from PE file.
@@ -2153,6 +2217,7 @@ class SectionHeader(baseclasses.BaseStructClass):
         self.sizeOfLoaderIrrelevantRawData = datatypes.DWORD(0x200)
         self.pointerToLoaderIrrelevantRawData = datatypes.DWORD(0x400)
         self.relevant_directories = []
+        self.liRange = []
 
         self._attrsList = ["name","misc","virtualAddress","sizeOfRawData","pointerToRawData","pointerToRelocations", \
                            "pointerToLineNumbers","numberOfRelocations","numberOfLinesNumbers","characteristics"]
@@ -2179,6 +2244,7 @@ class SectionHeader(baseclasses.BaseStructClass):
         sh.numberOfRelocations.value  = readDataInstance.readWord()
         sh.numberOfLinesNumbers.value  = readDataInstance.readWord()
         sh.characteristics.value  = readDataInstance.readDword()
+        sh.liRange = [[sh.virtualAddress.value, sh.sizeOfRawData.value]]
         return sh
 
     def getType(self):

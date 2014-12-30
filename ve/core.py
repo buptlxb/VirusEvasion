@@ -21,8 +21,10 @@ class Core():
         if self.__options.data and not self.__obfuscate_data():
             return False
         print '[+] Obfuscation completed.'
+        # self.__binary.extendSection(3, '\xff')
         self.__binary.write(self.__options.output)
         print '[+] Writing new PE completed.'
+
         return True
 
     def __obfuscate_entry(self):
@@ -31,7 +33,7 @@ class Core():
         # get index of the section which entry resides
         index = self.__binary.getSectionByRva(entry)
         # get the relative virtual address of junk code
-        jc_rva = self.__binary.sectionHeaders[index].sizeOfRawData.value + self.__binary.sectionHeaders[
+        jc_rva = self.__binary.sectionHeaders[index].misc.value + self.__binary.sectionHeaders[
             index].virtualAddress.value
         # generate junk code
         jc = junkcode.generate(jc_rva, entry, self.__options.entry)
@@ -48,7 +50,7 @@ class Core():
         # set the encrypt salt
         salt = 0xFF
         # get the XOR translator
-        xor = translator.XOR(salt)
+        xor = translator.XORPlus(salt)
         # encrypt the data section
         df_rva, data_size = self.__binary.encrypt_data_section(xor)
         # modify the entry point
