@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import pype32
 import junkcode
 import translator

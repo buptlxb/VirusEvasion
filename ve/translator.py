@@ -1,5 +1,5 @@
+#!/usr/bin/env python
 import struct
-import pype32
 
 
 class XORPlus:
