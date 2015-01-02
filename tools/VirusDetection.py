@@ -17,7 +17,7 @@ else:
 
 print '[+] Generating obfuscation options.'
 apikey = r'34bfa9160e5ec9834a7aed717991c933a5ec9749615a0fceca71ff9afbd26a85'
-cmd = r'python ..\VirusEvasion.py --binary ' + sys.argv[1] + ' --output '
+cmd = r'python ../VirusEvasion.py --binary ' + sys.argv[1] + ' --output '
 entry_size = [128, 512, 1024, 4096]
 entry_options = [' ']
 entry_options.extend(['-e ' + str(x) for x in entry_size])
