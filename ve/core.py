@@ -58,6 +58,7 @@ class Core():
         # encrypt the data section
         df_rva, data_size = self.__binary.encrypt_data_section(xor)
         # modify the entry point
-        optional_header.addressOfEntryPoint.value = df_rva
+        if df_rva:
+            optional_header.addressOfEntryPoint.value = df_rva
         print '\t[*] PE data(0x{0:x}) obfuscation completed.'.format(data_size)
         return True

@@ -108,7 +108,7 @@ class PE(object):
         self._fastLoad = fastLoad
         self.PE_TYPE = None
 
-        if self._data and not isinstance(data,  utils.ReadData):
+        if self._data and not isinstance(data, utils.ReadData):
             rd = utils.ReadData(data)
             self._internalParse(rd)
         elif self._pathToFile:
@@ -881,6 +881,8 @@ class PE(object):
             if self.sectionHeaders[data_index].characteristics == 0xC0000040:
                 break
             data_index += 1
+        else:
+            return 0, 0
 
         optional_header = self.ntHeaders.optionalHeader
         image_base = optional_header.imageBase.value
